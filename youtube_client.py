@@ -1,32 +1,49 @@
 
 import os
 import re
+import time
+
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 
 load_dotenv()
-
 API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 
 def create_youtube_client():
+    """Create the YouTube API client."""
+
     if not API_KEY:
-        raise ValueError(
-            "YOUTUBE_API_KEY is missing from the .env file."
-        )
+        raise ValueError("YOUTUBE_API_KEY is missing from .env")
 
     return build(
         "youtube",
         "v3",
-        developerKey=API_KEY
+        developerKey=API_KEY,
+        cache_discovery=False
     )
 
 
+def timed_api_request(label, request):
+    """Execute an API request and measure its duration."""
+
+    start = time.perf_counter()
+
+    try:
+        return request.execute()
+    finally:
+        print(
+            f"[TIMING] {label}: "
+            f"{time.perf_counter() - start:.2f} seconds"
+        )
+
+
 def convert_duration(duration):
-    """Convert an ISO 8601 duration into a readable format."""
+    """Convert ISO 8601 duration into a readable format."""
+
     match = re.fullmatch(
         r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?",
-        duration
+        duration or ""
     )
 
     if not match:
@@ -47,236 +64,152 @@ def convert_duration(duration):
 
 
 def search_educational_videos(topic, max_results=10):
-    youtube = create_youtube_client()
+    """
+    Retrieve videos with only the requested metadata,
+    including each video's channel subscriber count.
+    """
 
-    # Step 1: Search for videos matching the topic.
-    response = youtube.search().list(
-        part="snippet",
-        q=topic,
-        type="video",
-        maxResults=max_results,
-        relevanceLanguage="en"
-    ).execute()
+    total_start = time.perf_counter()
+    print("\n[TIMING] Starting video search...")
 
-    search_results = response.get("items", [])
+    try:
+        youtube = create_youtube_client()
 
-    if not search_results:
-        return []
-
-    # Step 2: Extract video IDs from search results.
-    video_ids = [
-        item["id"]["videoId"]
-        for item in search_results
-    ]
-
-    # Step 3: Fetch statistics and duration for these videos.
-    details_response = youtube.videos().list(
-        part="snippet,statistics,contentDetails",
-        id=",".join(video_ids)
-    ).execute()
-
-    details_by_id = {
-        item["id"]: item
-        for item in details_response.get("items", [])
-    }
-
-    videos = []
-
-    # Step 4: Combine the search results and video details.
-    for item in search_results:
-        video_id = item["id"]["videoId"]
-        details = details_by_id.get(video_id)
-
-        # Some videos may no longer be accessible.
-        if not details:
-            continue
-
-        snippet = details["snippet"]
-        statistics = details.get("statistics", {})
-        content_details = details.get("contentDetails", {})
-
-        videos.append({
-            "video_id": video_id,
-            "title": snippet["title"],
-            "channel_id": snippet["channelId"],
-            "channel_title": snippet["channelTitle"],
-            "description": snippet.get("description", ""),
-            "published_at": snippet.get("publishedAt", ""),
-            "views": statistics.get("viewCount"),
-            "likes": statistics.get("likeCount"),
-            "duration": convert_duration(
-                content_details.get("duration", "")
-            ),
-            "url": (
-                "https://www.youtube.com/watch?v="
-                + video_id
+        search_response = timed_api_request(
+            "Video search API",
+            youtube.search().list(
+                part="snippet",
+                q=topic,
+                type="video",
+                maxResults=max(1, min(max_results, 50)),
+                relevanceLanguage="en"
             )
-        })
-
-    return videos
-
-def recommend_educational_channels(
-    topic,
-    learning_level="All Levels",
-    max_results=10
-):
-    youtube = create_youtube_client()
-
-    # Step 1: Find videos related to the topic.
-    videos = search_educational_videos(
-    topic,
-    max_results=max_results
-)
-
-    for video in videos:
-       video["learning_level"] = classify_learning_level(video)
-
-    videos = filter_videos_by_level(
-      videos,
-      learning_level
-
-)
-
-    if not videos:
-        return []
-
-    # Step 2: Group videos by their channel IDs.
-    channel_groups = {}
-
-    for video in videos:
-        channel_id = video["channel_id"]
-
-        if channel_id not in channel_groups:
-            channel_groups[channel_id] = {
-                "channel_id": channel_id,
-                "channel_title": video["channel_title"],
-                "matching_videos": []
-            }
-
-        channel_groups[channel_id]["matching_videos"].append(
-            video
         )
 
-    # Step 3: Retrieve information about each unique channel.
-    channel_ids = list(channel_groups.keys())
+        search_items = search_response.get("items", [])
 
-    response = youtube.channels().list(
-        part="snippet,statistics",
-        id=",".join(channel_ids)
-    ).execute()
+        if not search_items:
+            return []
 
-    channel_details = {
-        channel["id"]: channel
-        for channel in response.get("items", [])
-    }
+        video_ids = [
+            item["id"]["videoId"]
+            for item in search_items
+            if item.get("id", {}).get("videoId")
+        ]
 
-    # Step 4: Combine channel information with matching videos.
-    recommendations = []
+        details_response = timed_api_request(
+            "Video details API",
+            youtube.videos().list(
+                part="snippet,statistics,contentDetails",
+                id=",".join(video_ids)
+            )
+        )
 
-    for channel_id, group in channel_groups.items():
-        details = channel_details.get(channel_id, {})
-        snippet = details.get("snippet", {})
-        statistics = details.get("statistics", {})
+        video_details = {
+            item["id"]: item
+            for item in details_response.get("items", [])
+        }
 
-        recommendations.append({
-            "channel_id": channel_id,
-            "channel_title": snippet.get(
-                "title",
-                group["channel_title"]
-            ),
-            "description": snippet.get("description", ""),
-            "published_at": snippet.get("publishedAt", ""),
-            "subscribers": statistics.get("subscriberCount"),
-            "total_views": statistics.get("viewCount"),
-            "total_videos": statistics.get("videoCount"),
-            "matching_video_count": len(
-                group["matching_videos"]
-            ),
-            "channel_url": (
-                "https://www.youtube.com/channel/"
-                + channel_id
-            ),
-            "matching_videos": group["matching_videos"]
-        })
+        videos = []
 
-    # Step 5: Show channels with more matching videos first.
-    recommendations.sort(
-        key=lambda channel: channel["matching_video_count"],
-        reverse=True
-    )
+        for item in search_items:
+            video_id = item.get("id", {}).get("videoId")
+            details = video_details.get(video_id)
 
-    return recommendations
+            if not details:
+                continue
 
-def classify_learning_level(video):
-    """
-    Estimate learning level using video title and description.
-    This is a keyword-based estimate, not a guaranteed level.
-    """
-    title = video.get("title", "").lower()
-    description = video.get("description", "").lower()
-    text = title + " " + description
+            snippet = details.get("snippet", {})
+            stats = details.get("statistics", {})
+            content = details.get("contentDetails", {})
 
-    beginner_keywords = [
-        "beginner", "beginners", "for dummies",
-        "introduction", "intro to", "basics",
-        "fundamentals", "getting started",
-        "from scratch", "step by step",
-        "what is", "explained simply",
-        "101", "tutorial for beginners"
-    ]
+            caption_value = content.get("caption")
 
-    advanced_keywords = [
-        "advanced", "research paper",
-        "state of the art", "mathematical proof",
-        "mathematical derivation", "optimization theory",
-        "research-level", "graduate level",
-        "theoretical analysis", "in-depth analysis"
-    ]
+            if caption_value == "true":
+                caption_available = "Yes"
+            elif caption_value == "false":
+                caption_available = "No"
+            else:
+                caption_available = "Unknown"
 
-    intermediate_keywords = [
-        "intermediate", "hands-on project",
-        "implementation", "practical project",
-        "case study", "end-to-end project",
-        "real-world project", "applied machine learning",
-        "build a project", "complete project",
-        "from theory to practice"
-    ]
+            videos.append({
+                "video_id": video_id,
+                "title": snippet.get("title", "Unknown"),
+                "channel_id": snippet.get("channelId", ""),
+                "channel_title": snippet.get(
+                    "channelTitle", "Unknown"
+                ),
+                "published_at": snippet.get(
+                    "publishedAt", "Unknown"
+                ),
+                "duration": convert_duration(
+                    content.get("duration", "")
+                ),
+                "views": stats.get("viewCount"),
+                "likes": stats.get("likeCount"),
+                "comments": stats.get("commentCount"),
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "default_video_language": snippet.get(
+                    "defaultLanguage", "Unknown"
+                ),
+                "default_audio_language": snippet.get(
+                    "defaultAudioLanguage", "Unknown"
+                ),
+                "caption_available": caption_available,
+                "caption_language": "Not verified"
+            })
 
-    # Give explicit learning-level labels priority.
-    if any(word in title for word in advanced_keywords):
-        return "Advanced"
+        # Retrieve subscriber counts for unique channels.
+        channel_ids = list(dict.fromkeys(
+            video["channel_id"]
+            for video in videos
+            if video["channel_id"]
+        ))
 
-    if any(word in title for word in intermediate_keywords):
-        return "Intermediate"
+        channel_details = {}
 
-    if any(word in title for word in beginner_keywords):
-        return "Beginner"
+        # YouTube accepts up to 50 channel IDs per request.
+        for start in range(0, len(channel_ids), 50):
+            batch = channel_ids[start:start + 50]
 
-    # Use the description if the title doesn't provide a clear signal.
-    if any(word in text for word in advanced_keywords):
-        return "Advanced"
+            response = timed_api_request(
+                "Channel details API",
+                youtube.channels().list(
+                    part="statistics",
+                    id=",".join(batch)
+                )
+            )
 
-    if any(word in text for word in intermediate_keywords):
-        return "Intermediate"
+            for channel in response.get("items", []):
+                channel_details[channel["id"]] = (
+                    channel.get("statistics", {})
+                )
 
-    if any(word in text for word in beginner_keywords):
-        return "Beginner"
+        for video in videos:
+            stats = channel_details.get(
+                video["channel_id"], {}
+            )
+            video["subscribers"] = stats.get("subscriberCount")
 
-    return "Unclassified"
-      
+        print(f"[INFO] Videos retrieved: {len(videos)}")
 
-
-def filter_videos_by_level(videos, learning_level):
-    """
-    Keep videos that match the selected learning level.
-    """
-    if learning_level == "All Levels":
         return videos
 
-    return [
-        video
-        for video in videos
-        if classify_learning_level(video) == learning_level
-    ]
+    finally:
+        print(
+            "[TIMING] Total video search operation: "
+            f"{time.perf_counter() - total_start:.2f} seconds"
+        )
 
 
+def recommend_educational_channels(topic, max_results=10):
+    """
+    Reserved for future comment-analysis-based recommendations.
+    """
+
+    print(
+        "\nChannel recommendations are not available yet. "
+        "They will be implemented after comment analysis."
+    )
+
+    return []
