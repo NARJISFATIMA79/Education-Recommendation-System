@@ -118,8 +118,9 @@ def display_recommendations(recommendations):
             "Unknown channel",
         )
 
-        print(f"\n{index}. {channel_title}")
-        print("-" * 60)
+        print("\n" + "=" * 60)
+        print(f"{index}. {channel_title}")
+        print("=" * 60)
 
         print(
             "Recommendation score: "
