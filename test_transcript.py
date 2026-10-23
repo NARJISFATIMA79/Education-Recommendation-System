@@ -1,22 +1,39 @@
+
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import (
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    VideoUnavailable,
+    RequestBlocked,
+    IpBlocked,
+)
 
 video_id = input("Enter a YouTube video ID: ").strip()
 
 try:
     api = YouTubeTranscriptApi()
+    transcript = api.fetch(video_id)
 
-    # Try English first, then Hindi.
-    transcript = api.fetch(
-        video_id,
-        languages=["en", "hi"]
-    )
+    print("\nTranscript retrieved successfully:\n")
 
-    print("\nTranscript retrieved successfully!")
-    print("Language:", transcript.language)
-    print("\nFirst 10 transcript segments:\n")
-
-    for snippet in list(transcript)[:10]:
+    for snippet in transcript:
         print(snippet.text)
 
+except (TranscriptsDisabled, NoTranscriptFound):
+    print(
+        "No accessible transcript was found for this video."
+    )
+
+except (RequestBlocked, IpBlocked):
+    print(
+        "YouTube is blocking transcript requests from this network. "
+        "Try again later or use another permitted access method."
+    )
+
+except VideoUnavailable:
+    print(
+        "The video is unavailable or cannot be accessed."
+    )
+
 except Exception as error:
-    print(f"\nCould not retrieve transcript: {error}")
+    print(f"Transcript retrieval failed: {error}")
